@@ -1,0 +1,342 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Event Ticketing</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 20px; max-width:900px; margin:auto; }
+    label { display:block; margin-top:10px; }
+    input, select { padding:8px; width: 100%; box-sizing: border-box; }
+    .row { display:flex; gap:10px; }
+    .col { flex:1; }
+    #receipt { border:1px solid #ddd; padding:12px; margin-top:12px; display:none; }
+    #qrcode { margin-top:8px; }
+    button { padding:10px 16px; margin-top:10px; cursor:pointer; }
+    .muted { color:#666; font-size:0.9rem; }
+    .inline { display:inline-block; vertical-align:middle; }
+    table { border-collapse: collapse; width:100%; margin-top:8px;}
+    td, th { padding:8px; border:1px solid #eee; text-align:left; }
+  </style>
+  <!-- PayPal JS SDK: replace PAYPAL_CLIENT_ID below. Enabling card funding so buyers can pay by card -->
+  <script src="https://www.paypal.com/sdk/js?client-id=PAYPAL_CLIENT_ID&currency=USD&components=buttons&enable-funding=card"></script>
+
+  <!-- EmailJS SDK -->
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/emailjs-com@2.6.4/dist/email.min.js"></script>
+
+  <!-- jsPDF for PDF download -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- QRCode.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+
+  <h1>Buy Tickets — School Event</h1>
+  <p class="muted">Simple checkout — pay with PayPal or Credit/Debit card (processed by PayPal). You'll get a receipt to show at the door.</p>
+
+  <div>
+    <label>Event name
+      <input id="eventName" value="Spring Concert — School Auditorium" />
+    </label>
+
+    <div class="row">
+      <div class="col">
+        <label>Your name
+          <input id="buyerName" placeholder="Full name" />
+        </label>
+      </div>
+      <div class="col">
+        <label>Email (we'll send the receipt)
+          <input id="buyerEmail" type="email" placeholder="email@example.com" />
+        </label>
+      </div>
+    </div>
+
+    <h3>Choose tickets</h3>
+    <table>
+      <tr>
+        <th>Type</th><th>Price (USD)</th><th>Quantity</th><th>Line total</th>
+      </tr>
+      <tr>
+        <td>Student</td>
+        <td>$10.00</td>
+        <td>
+          <select id="studentQty">
+            <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          </select>
+        </td>
+        <td>$<span id="studentLine">0.00</span></td>
+      </tr>
+      <tr>
+        <td>Adult</td>
+        <td>$20.00</td>
+        <td>
+          <select id="adultQty">
+            <option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option>
+          </select>
+        </td>
+        <td>$<span id="adultLine">0.00</span></td>
+      </tr>
+      <tr>
+        <th colspan="3" style="text-align:right">Total:</th>
+        <th>$<span id="totalAmount">0.00</span></th>
+      </tr>
+    </table>
+
+    <div style="margin-top:12px;">
+      <div id="paypal-button-container"></div>
+      <div class="muted">PayPal will process the payment and deposit funds into the school's PayPal account. Buyers can pay with a PayPal account or with credit/debit card (no PayPal account required in many regions).</div>
+    </div>
+  </div>
+
+  <div id="receipt">
+    <h2>Receipt</h2>
+    <div id="receiptHtml"></div>
+    <div id="qrcode"></div>
+    <button id="downloadPdfBtn">Download Receipt (PDF)</button>
+    <button id="emailReceiptBtn">Send Receipt to Buyer</button>
+  </div>
+
+<script>
+  // ------------ CONFIG - replace these with your real IDs ------------
+  const EMAILJS_USER_ID = "YOUR_EMAILJS_USERID";           // from EmailJS (public key/user id)
+  const EMAILJS_SERVICE_ID = "YOUR_EMAILJS_SERVICE_ID";   // e.g., 'gmail'
+  const EMAILJS_TEMPLATE_ID = "YOUR_EMAILJS_TEMPLATE_ID"; // e.g., 'ticket_receipt'
+  // PayPal client ID has been placed in the script src (replace there)
+
+  // Initialize EmailJS (if configured)
+  (function(){
+    if (typeof emailjs !== 'undefined' && EMAILJS_USER_ID && !EMAILJS_USER_ID.includes("YOUR_")) {
+      emailjs.init(EMAILJS_USER_ID);
+    }
+  })();
+
+  const PRICES = { student: 10.00, adult: 20.00 };
+
+  function updateTotals() {
+    const s = parseInt(document.getElementById('studentQty').value || '0', 10);
+    const a = parseInt(document.getElementById('adultQty').value || '0', 10);
+    const sLine = (s * PRICES.student).toFixed(2);
+    const aLine = (a * PRICES.adult).toFixed(2);
+    document.getElementById('studentLine').textContent = sLine;
+    document.getElementById('adultLine').textContent = aLine;
+    const total = (s * PRICES.student + a * PRICES.adult).toFixed(2);
+    document.getElementById('totalAmount').textContent = total;
+  }
+
+  document.getElementById('studentQty').addEventListener('change', updateTotals);
+  document.getElementById('adultQty').addEventListener('change', updateTotals);
+  updateTotals();
+
+  // Helper: make a simple unique ticket group id
+  function makeTicketId() {
+    return 'T-' + Date.now().toString(36).toUpperCase() + '-' + Math.floor(Math.random()*0xFFFF).toString(16).toUpperCase();
+  }
+
+  function fmt(n) { return Number(n).toFixed(2); }
+
+  // Render PayPal button
+  paypal.Buttons({
+    style: { layout: 'vertical', color: 'blue', shape: 'rect', label:'paypal' },
+
+    // When creating the order, send the exact computed total.
+    createOrder: function(data, actions) {
+      const studentQty = parseInt(document.getElementById('studentQty').value || '0', 10);
+      const adultQty = parseInt(document.getElementById('adultQty').value || '0', 10);
+      const total = (studentQty * PRICES.student + adultQty * PRICES.adult).toFixed(2);
+
+      if (Number(total) <= 0) {
+        alert('Please choose at least one ticket before paying.');
+        return Promise.reject();
+      }
+
+      // Include metadata in custom_id as JSON string (short)
+      const meta = { studentQty, adultQty };
+
+      return actions.order.create({
+        purchase_units: [{
+          amount: { value: total },
+          description: document.getElementById('eventName').value,
+          custom_id: JSON.stringify(meta)
+        }]
+      });
+    },
+
+    onApprove: function(data, actions) {
+      return actions.order.capture().then(function(details) {
+        const buyerNameField = document.getElementById('buyerName');
+        const buyerEmailField = document.getElementById('buyerEmail');
+
+        if(!buyerNameField.value && details.payer && details.payer.name) {
+          buyerNameField.value = (details.payer.name.given_name || '') + ' ' + (details.payer.name.surname || '');
+        }
+        if(!buyerEmailField.value && details.payer && details.payer.email_address) {
+          buyerEmailField.value = details.payer.email_address;
+        }
+
+        const ticketGroupId = makeTicketId();
+        const eventName = document.getElementById('eventName').value;
+        const studentQty = parseInt(document.getElementById('studentQty').value || '0', 10);
+        const adultQty = parseInt(document.getElementById('adultQty').value || '0', 10);
+        const total = fmt(studentQty * PRICES.student + adultQty * PRICES.adult);
+        const paidBy = buyerNameField.value || (details.payer && details.payer.name ? (details.payer.name.given_name || '') + ' ' + (details.payer.name.surname || '') : 'Buyer');
+
+        // Build an itemized receipt HTML
+        let receiptHtml = '<div><strong>Event:</strong> ' + escapeHtml(eventName) + '</div>';
+        receiptHtml += '<div><strong>Buyer:</strong> ' + escapeHtml(paidBy) + '</div>';
+        receiptHtml += '<div><strong>Email:</strong> ' + escapeHtml(document.getElementById('buyerEmail').value) + '</div>';
+        receiptHtml += '<div style="margin-top:8px"><strong>Ticket Group ID:</strong> ' + ticketGroupId + '</div>';
+        receiptHtml += '<table><tr><th>Type</th><th>Unit price</th><th>Quantity</th><th>Line total</th></tr>';
+        if(studentQty>0) receiptHtml += '<tr><td>Student</td><td>$' + PRICES.student.toFixed(2) + '</td><td>' + studentQty + '</td><td>$' + (studentQty*PRICES.student).toFixed(2) + '</td></tr>';
+        if(adultQty>0) receiptHtml += '<tr><td>Adult</td><td>$' + PRICES.adult.toFixed(2) + '</td><td>' + adultQty + '</td><td>$' + (adultQty*PRICES.adult).toFixed(2) + '</td></tr>';
+        receiptHtml += '<tr><th colspan="3" style="text-align:right">Total</th><th>$' + total + '</th></tr></table>';
+        receiptHtml += '<div style="margin-top:8px"><strong>PayPal Transaction:</strong> ' + details.id + '</div>';
+
+        document.getElementById('receiptHtml').innerHTML = receiptHtml;
+        document.getElementById('receipt').style.display = 'block';
+
+        // Generate QR with ticket group id & summary
+        const q = document.getElementById('qrcode');
+        q.innerHTML = '';
+        new QRCode(q, {
+          text: 'EVENT:' + escapeHtml(eventName) + '|GROUP:' + ticketGroupId + '|S:' + studentQty + '|A:' + adultQty,
+          width: 128, height: 128
+        });
+
+        window.lastTicket = {
+          ticketGroupId, eventName, total, studentQty, adultQty, paidBy, paypalDetails: details, receiptHtml
+        };
+
+        alert('Payment completed — receipt shown below. Click "Send Receipt to Buyer" to email the receipt.');
+      });
+    },
+
+    onCancel: function (data) {
+      alert('Payment cancelled.');
+    },
+
+    onError: function (err) {
+      console.error(err);
+      alert('An error occurred with PayPal. See console for details.');
+    }
+
+
+  // Form validation: require at least one ticket and a buyer email before allowing payment
+  function isFormValid() {
+    const studentQty = parseInt(document.getElementById('studentQty').value||'0',10);
+    const adultQty = parseInt(document.getElementById('adultQty').value||'0',10);
+    const email = (document.getElementById('buyerEmail').value || '').trim();
+    return (studentQty + adultQty) > 0 && email.length > 3 && email.includes('@');
+  }
+
+  function updatePayButtonState() {
+    const container = document.getElementById('paypal-button-container');
+    const msgId = 'pay-msg';
+    let msg = document.getElementById(msgId);
+    if(!msg) {
+      msg = document.createElement('div');
+      msg.id = msgId;
+      msg.style.marginTop = '8px';
+      msg.style.color = '#b00';
+      container.parentNode.insertBefore(msg, container.nextSibling);
+    }
+    if(isFormValid()) {
+      msg.textContent = '';
+      // show container (buttons render into it automatically; hide only initial overlay)
+      container.style.opacity = '1';
+      container.style.pointerEvents = 'auto';
+    } else {
+      msg.textContent = 'Please enter a valid email and choose at least one ticket to enable payment.';
+      container.style.opacity = '0.4';
+      container.style.pointerEvents = 'none';
+    }
+  }
+
+  document.getElementById('studentQty').addEventListener('change', updatePayButtonState);
+  document.getElementById('adultQty').addEventListener('change', updatePayButtonState);
+  document.getElementById('buyerEmail').addEventListener('input', updatePayButtonState);
+  // run once
+  updatePayButtonState();
+
+  }).render('#paypal-button-container');
+
+  function escapeHtml(s) {
+    if(!s && s !== 0) return '';
+    return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
+  }
+
+  // Download PDF
+  document.getElementById('downloadPdfBtn').addEventListener('click', async () => {
+    const t = window.lastTicket;
+    if(!t) { alert('No ticket to download yet.'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({unit:'pt', format:'letter'});
+    const left = 40;
+    let y = 60;
+    doc.setFontSize(20);
+    doc.text(t.eventName, left, y); y += 28;
+    doc.setFontSize(12);
+    doc.text('Ticket Group ID: ' + t.ticketGroupId, left, y); y += 18;
+    doc.text('Buyer: ' + t.paidBy, left, y); y += 18;
+    doc.text('Email: ' + document.getElementById('buyerEmail').value, left, y); y += 18;
+    if(t.studentQty>0) { doc.text('Student tickets: ' + t.studentQty, left, y); y += 18; }
+    if(t.adultQty>0) { doc.text('Adult tickets: ' + t.adultQty, left, y); y += 18; }
+    doc.text('Amount paid: $' + t.total, left, y); y += 24;
+    doc.text('PayPal Transaction: ' + t.paypalDetails.id, left, y); y += 40;
+    doc.text('Show this PDF at the door as proof of payment.', left, y);
+
+    try {
+      const q = document.querySelector('#qrcode img') || document.querySelector('#qrcode canvas');
+      if(q) {
+        let dataUrl;
+        if(q.tagName.toLowerCase() === 'img') dataUrl = q.src;
+        else {
+          dataUrl = q.toDataURL('image/png');
+        }
+        doc.addImage(dataUrl, 'PNG', 400, 60, 140, 140);
+      }
+    } catch(e) {
+      console.warn('Could not add QR to PDF', e);
+    }
+
+    const filename = (t.eventName.replace(/\s+/g,'_') + '_tickets_' + t.ticketGroupId + '.pdf').replace(/[^a-zA-Z0-9_\-.]/g,'_');
+    doc.save(filename);
+  });
+
+  // Send email receipt via EmailJS (if configured)
+  document.getElementById('emailReceiptBtn').addEventListener('click', async () => {
+    const t = window.lastTicket;
+    if(!t) { alert('No ticket to email yet.'); return; }
+
+    if(!EMAILJS_USER_ID || EMAILJS_USER_ID.includes("YOUR_")) {
+      alert('EmailJS not configured. Set EMAILJS_USER_ID and other IDs in the script.');
+      return;
+    }
+
+    const buyerEmail = document.getElementById('buyerEmail').value;
+    const buyerName = document.getElementById('buyerName').value;
+
+    const templateParams = {
+      buyer_name: buyerName || t.paidBy || 'Buyer',
+      buyer_email: buyerEmail,
+      event: t.eventName,
+      ticket_group_id: t.ticketGroupId,
+      student_qty: t.studentQty,
+      adult_qty: t.adultQty,
+      amount: t.total,
+      receipt_html: t.receiptHtml + '<div><img src="' + (document.querySelector('#qrcode img') ? document.querySelector('#qrcode img').src : '') + '" alt="QR" /></div>'
+    };
+
+    emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams)
+      .then(function(response) {
+         alert('Receipt emailed to ' + buyerEmail + '.');
+      }, function(error) {
+         console.error('FAILED...', error);
+         alert('Email failed to send. See console for details.');
+      });
+  });
+
+</script>
+</body>
+</html>
